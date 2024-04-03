@@ -33,8 +33,6 @@ import bs58 from 'bs58';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  AUTO_SELL,
-  AUTO_SELL_DELAY,
   CHECK_IF_MINT_IS_RENOUNCED,
   COMMITMENT_LEVEL,
   LOG_LEVEL,
@@ -45,11 +43,10 @@ import {
   QUOTE_MINT,
   RPC_ENDPOINT,
   RPC_WEBSOCKET_ENDPOINT,
-  SNIPE_LIST_REFRESH_INTERVAL,
-  USE_SNIPE_LIST,
   MIN_POOL_SIZE,
   MAX_POOL_SIZE,
   ONE_TOKEN_AT_A_TIME,
+  SELL_AFTER_GAIN,
 } from './constants';
 
 const solanaConnection = new Connection(RPC_ENDPOINT, {
@@ -74,8 +71,6 @@ let quoteAmount: TokenAmount;
 let quoteMinPoolSizeAmount: TokenAmount;
 let quoteMaxPoolSizeAmount: TokenAmount;
 let processingToken: Boolean = false;
-
-let snipeList: string[] = [];
 
 async function init(): Promise<void> {
   logger.level = LOG_LEVEL;
@@ -111,7 +106,6 @@ async function init(): Promise<void> {
     }
   }
 
-  logger.info(`Snipe list: ${USE_SNIPE_LIST}`);
   logger.info(`Check mint renounced: ${CHECK_IF_MINT_IS_RENOUNCED}`);
   logger.info(
     `Min pool size: ${quoteMinPoolSizeAmount.isZero() ? 'false' : quoteMinPoolSizeAmount.toFixed()} ${quoteToken.symbol}`,
@@ -121,8 +115,6 @@ async function init(): Promise<void> {
   );
   logger.info(`One token at a time: ${ONE_TOKEN_AT_A_TIME}`);
   logger.info(`Buy amount: ${quoteAmount.toFixed()} ${quoteToken.symbol}`);
-  logger.info(`Auto sell: ${AUTO_SELL}`);
-  logger.info(`Sell delay: ${AUTO_SELL_DELAY === 0 ? 'false' : AUTO_SELL_DELAY}`);
 
   // check existing wallet for associated token account of quote mint
   const tokenAccounts = await getTokenAccounts(solanaConnection, wallet.publicKey, COMMITMENT_LEVEL);
@@ -159,7 +151,7 @@ function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
 }
 
 export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStateV4) {
-  if (!shouldBuy(poolState.baseMint.toString())) {
+  if (!shouldBuy()) {
     return;
   }
 
@@ -325,10 +317,6 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
   let sold = false;
   let retries = 0;
 
-  if (AUTO_SELL_DELAY > 0) {
-    await new Promise((resolve) => setTimeout(resolve, AUTO_SELL_DELAY));
-  }
-
   do {
     try {
       const tokenAccount = existingTokenAccounts.get(mint.toString());
@@ -421,10 +409,10 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
   processingToken = false;
 }
 
-function shouldBuy(key: string): boolean {
+function shouldBuy(): boolean {
   logger.info(`-------------------🤖🔧------------------- `);
   logger.info(`Processing token: ${processingToken}`);
-  return USE_SNIPE_LIST ? snipeList.includes(key) : ONE_TOKEN_AT_A_TIME ? !processingToken : true;
+  return ONE_TOKEN_AT_A_TIME ? !processingToken : true;
 }
 
 const runListener = async () => {
@@ -488,35 +476,6 @@ const runListener = async () => {
       },
     ],
   );
-
-  if (AUTO_SELL) {
-    const walletSubscriptionId = solanaConnection.onProgramAccountChange(
-      TOKEN_PROGRAM_ID,
-      async (updatedAccountInfo) => {
-        const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo!.data);
-
-        if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
-          return;
-        }
-
-        const _ = sell(updatedAccountInfo.accountId, accountData.mint, accountData.amount);
-      },
-      COMMITMENT_LEVEL,
-      [
-        {
-          dataSize: 165,
-        },
-        {
-          memcmp: {
-            offset: 32,
-            bytes: wallet.publicKey.toBase58(),
-          },
-        },
-      ],
-    );
-
-    logger.info(`Listening for wallet changes: ${walletSubscriptionId}`);
-  }
 
   logger.info(`Listening for raydium changes: ${raydiumSubscriptionId}`);
   logger.info(`Listening for open book changes: ${openBookSubscriptionId}`);
