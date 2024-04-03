@@ -75,8 +75,6 @@ let quoteMinPoolSizeAmount: TokenAmount;
 let quoteMaxPoolSizeAmount: TokenAmount;
 let processingToken: Boolean = false;
 
-
-
 let snipeList: string[] = [];
 
 async function init(): Promise<void> {
@@ -143,9 +141,6 @@ async function init(): Promise<void> {
   }
 
   quoteTokenAssociatedAddress = tokenAccount.pubkey;
-
-  // load tokens to snipe
-  loadSnipeList();
 }
 
 function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
@@ -426,27 +421,10 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
   processingToken = false;
 }
 
-function loadSnipeList() {
-  if (!USE_SNIPE_LIST) {
-    return;
-  }
-
-  const count = snipeList.length;
-  const data = fs.readFileSync(path.join(__dirname, 'snipe-list.txt'), 'utf-8');
-  snipeList = data
-    .split('\n')
-    .map((a) => a.trim())
-    .filter((a) => a);
-
-  if (snipeList.length != count) {
-    logger.info(`Loaded snipe list: ${snipeList.length}`);
-  }
-}
-
 function shouldBuy(key: string): boolean {
   logger.info(`-------------------🤖🔧------------------- `);
-  logger.info(`Processing token: ${processingToken}`)
-  return USE_SNIPE_LIST ? snipeList.includes(key) : ONE_TOKEN_AT_A_TIME ? !processingToken : true
+  logger.info(`Processing token: ${processingToken}`);
+  return USE_SNIPE_LIST ? snipeList.includes(key) : ONE_TOKEN_AT_A_TIME ? !processingToken : true;
 }
 
 const runListener = async () => {
@@ -546,10 +524,6 @@ const runListener = async () => {
   logger.info('------------------- 🚀 ---------------------');
   logger.info('Bot is running! Press CTRL + C to stop it.');
   logger.info('------------------- 🚀 ---------------------');
-
-  if (USE_SNIPE_LIST) {
-    setInterval(loadSnipeList, SNIPE_LIST_REFRESH_INTERVAL);
-  }
 };
 
 runListener();
