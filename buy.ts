@@ -151,7 +151,10 @@ function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
 }
 
 export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStateV4) {
-  if (!shouldBuy()) {
+  logger.info(`-------------------🤖🔧------------------- `);
+  logger.info(`Processing token: ${processingToken}`);
+  const shouldBuy = ONE_TOKEN_AT_A_TIME ? !processingToken : true;
+  if (!shouldBuy) {
     return;
   }
 
@@ -407,12 +410,6 @@ async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish)
     }
   } while (!sold && retries < MAX_SELL_RETRIES);
   processingToken = false;
-}
-
-function shouldBuy(): boolean {
-  logger.info(`-------------------🤖🔧------------------- `);
-  logger.info(`Processing token: ${processingToken}`);
-  return ONE_TOKEN_AT_A_TIME ? !processingToken : true;
 }
 
 const runListener = async () => {
