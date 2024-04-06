@@ -14,5 +14,6 @@ export const QUOTE_AMOUNT = retrieveEnvVariable('QUOTE_AMOUNT', logger);
 export const MIN_POOL_SIZE = retrieveEnvVariable('MIN_POOL_SIZE', logger);
 export const MAX_POOL_SIZE = retrieveEnvVariable('MAX_POOL_SIZE', logger);
 export const ONE_TOKEN_AT_A_TIME = retrieveEnvVariable('ONE_TOKEN_AT_A_TIME', logger) === 'true';
-export const SELL_AFTER_GAIN = retrieveEnvVariable('SELL_AFTER_GAIN', logger);
 export const MORALIS_API_KEY = retrieveEnvVariable('MORALIS_API_KEY', logger);
+export const SELL_AFTER_GAIN_PERCENTAGE = parseFloat(retrieveEnvVariable('SELL_AFTER_GAIN_PERCENTAGE', logger));
+export const AXIOM_API_KEY = retrieveEnvVariable('AXIOM_API_KEY', logger);

@@ -52,9 +52,10 @@ import {
   MIN_POOL_SIZE,
   MAX_POOL_SIZE,
   ONE_TOKEN_AT_A_TIME,
-  SELL_AFTER_GAIN,
   MORALIS_API_KEY,
+  SELL_AFTER_GAIN_PERCENTAGE,
 } from './constants';
+import BN from 'bn.js';
 
 const solanaConnection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
@@ -63,7 +64,7 @@ const solanaConnection = new Connection(RPC_ENDPOINT, {
 export interface MinimalTokenAccountData {
   mint: PublicKey;
   address: PublicKey;
-  amount: number;
+  amount: BN;
   poolKeys?: LiquidityPoolKeys;
   market?: MinimalMarketLayoutV3;
   purchasePrice?: number;
@@ -132,8 +133,8 @@ async function init(): Promise<void> {
     existingTokenAccounts.set(ta.accountInfo.mint.toString(), <MinimalTokenAccountData>{
       mint: ta.accountInfo.mint,
       address: ta.pubkey,
-      amount: ta.accountInfo.amount.toNumber(),
-      purchasePrice: undefined, // It would be too costly to use API just for real-time prices
+      amount: ta.amount,
+      purchasePrice: ta.price,
     });
   }
 
@@ -254,6 +255,7 @@ export async function processOpenBookMarket(updatedAccountInfo: KeyedAccountInfo
 
 async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise<void> {
   try {
+    // This will happen if we have already seen this token (if we either bought it, failed at buying it, or we have it in our wallet before running the program.)
     let tokenAccount = existingTokenAccounts.get(accountData.baseMint.toString());
 
     if (!tokenAccount) {
@@ -261,7 +263,10 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
       const market = await getMinimalMarketV3(solanaConnection, accountData.marketId, COMMITMENT_LEVEL);
       // In method getTokenAccountAndPrice, we fetch the price of the token as well
       tokenAccount = await getTokenAccountAndPrice(accountData.baseMint, market);
+      existingTokenAccounts.set(accountData.baseMint.toString(), tokenAccount);
     }
+    // amount bought is set after we've successfully bought the token
+    const price = tokenAccount.purchasePrice;
 
     tokenAccount.poolKeys = createPoolKeys(accountId, accountData, tokenAccount.market!);
     const { innerTransaction } = Liquidity.makeSwapFixedInInstruction(
@@ -322,6 +327,12 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
         },
         `Confirmed buy tx`,
       );
+      if (price) {
+        // It's important to set the amount bought after we've successfully bought the token, since the buy command might fail
+        const amount = quoteAmount.raw.toNumber() / price;
+        const updatedTokenAccount = { ...tokenAccount, amount: new BN(amount) };
+        existingTokenAccounts.set(accountData.baseMint.toString(), updatedTokenAccount);
+      }
     } else {
       logger.debug(confirmation.value.err);
       logger.info({ mint: accountData.baseMint, signature }, `Error confirming buy tx`);
@@ -333,18 +344,12 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
   }
 }
 
-async function sell(accountId: PublicKey, mint: PublicKey, amount: BigNumberish): Promise<void> {
+async function sell(mint: PublicKey, amount: BigNumberish, tokenAccount: MinimalTokenAccountData): Promise<void> {
   let sold = false;
   let retries = 0;
 
   do {
     try {
-      const tokenAccount = existingTokenAccounts.get(mint.toString());
-
-      if (!tokenAccount) {
-        return;
-      }
-
       if (!tokenAccount.poolKeys) {
         logger.warn({ mint }, 'No pool keys found');
         return;
@@ -490,6 +495,50 @@ const runListener = async () => {
       },
     ],
   );
+
+  const walletSubscriptionId = solanaConnection.onProgramAccountChange(
+    TOKEN_PROGRAM_ID,
+    async (updatedAccountInfo) => {
+      const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo!.data);
+
+      if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
+        return;
+      }
+      const tokenAccount = existingTokenAccounts.get(accountData.mint.toString());
+      if (!tokenAccount || !tokenAccount.purchasePrice) {
+        // logger.warn({ mint:
+        logger.warn(`Trying to sell token ${accountData.mint.toString()} but no purchase price found`);
+        return;
+      }
+      const currentPrice = await fetchCoinPrice(tokenAccount.mint.toString(), MORALIS_API_KEY);
+      if (!currentPrice) {
+        logger.warn(
+          `Failed to fetch current price for token ${accountData.mint.toString()}, or the price of token is 0.`,
+        );
+        return;
+      }
+
+      const profit_percentage = (currentPrice - tokenAccount.purchasePrice) / tokenAccount.purchasePrice;
+
+      if (profit_percentage > SELL_AFTER_GAIN_PERCENTAGE) {
+        sell(accountData.mint, accountData.amount, tokenAccount);
+      }
+    },
+    COMMITMENT_LEVEL,
+    [
+      {
+        dataSize: 165,
+      },
+      {
+        memcmp: {
+          offset: 32,
+          bytes: wallet.publicKey.toBase58(),
+        },
+      },
+    ],
+  );
+
+  logger.info(`Listening for wallet changes: ${walletSubscriptionId}`);
 
   logger.info(`Listening for raydium changes: ${raydiumSubscriptionId}`);
   logger.info(`Listening for open book changes: ${openBookSubscriptionId}`);

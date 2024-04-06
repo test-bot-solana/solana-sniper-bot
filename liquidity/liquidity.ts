@@ -14,8 +14,9 @@ import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { MinimalMarketLayoutV3 } from '../market';
 import BN from 'bn.js';
 import Moralis from 'moralis';
+import { MORALIS_API_KEY } from '../constants';
 
-export type TokenAccountWithAmount = TokenAccount & { amount: BN };
+export type TokenAccountWithAmountAndPrice = TokenAccount & { amount: BN; price: number | undefined };
 
 export const RAYDIUM_LIQUIDITY_PROGRAM_ID_V4 = MAINNET_PROGRAM_ID.AmmV4;
 export const OPENBOOK_PROGRAM_ID = MAINNET_PROGRAM_ID.OPENBOOK_MARKET;
@@ -62,7 +63,11 @@ export function createPoolKeys(
   };
 }
 
-export async function getTokenAccounts(connection: Connection, owner: PublicKey, commitment?: Commitment) {
+export async function getTokenAccounts(
+  connection: Connection,
+  owner: PublicKey,
+  commitment?: Commitment,
+): Promise<TokenAccountWithAmountAndPrice[]> {
   const tokenResp = await connection.getTokenAccountsByOwner(
     owner,
     {
@@ -71,13 +76,15 @@ export async function getTokenAccounts(connection: Connection, owner: PublicKey,
     commitment,
   );
 
-  const accounts: TokenAccountWithAmount[] = [];
+  const accounts: TokenAccountWithAmountAndPrice[] = [];
   for (const { pubkey, account } of tokenResp.value) {
     const accountInfo = SPL_ACCOUNT_LAYOUT.decode(account.data);
+    const coinPrice = await fetchCoinPrice(accountInfo.mint.toBase58(), MORALIS_API_KEY);
     accounts.push({
       pubkey,
       programId: account.owner,
       accountInfo,
+      price: coinPrice,
       // Add the token amount to the account object
       amount: accountInfo.amount,
     });
@@ -88,6 +95,7 @@ export async function getTokenAccounts(connection: Connection, owner: PublicKey,
 
 export async function fetchCoinPrice(mintAddress: string, apiKey: string): Promise<number | undefined> {
   try {
+    console.log('Fetching real-time coin price:', mintAddress, apiKey);
     await Moralis.start({ apiKey });
     const response = await Moralis.SolApi.token.getTokenPrice({
       network: 'mainnet',
