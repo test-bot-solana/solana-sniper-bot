@@ -25,7 +25,13 @@ import {
   TransactionMessage,
   VersionedTransaction,
 } from '@solana/web3.js';
-import { getTokenAccounts, RAYDIUM_LIQUIDITY_PROGRAM_ID_V4, OPENBOOK_PROGRAM_ID, createPoolKeys } from './liquidity';
+import {
+  getTokenAccounts,
+  RAYDIUM_LIQUIDITY_PROGRAM_ID_V4,
+  OPENBOOK_PROGRAM_ID,
+  createPoolKeys,
+  fetchCoinPrice,
+} from './liquidity';
 import { logger } from './utils';
 import { getMinimalMarketV3, MinimalMarketLayoutV3 } from './market';
 import { MintLayout } from './types';
@@ -47,6 +53,7 @@ import {
   MAX_POOL_SIZE,
   ONE_TOKEN_AT_A_TIME,
   SELL_AFTER_GAIN,
+  MORALIS_API_KEY,
 } from './constants';
 
 const solanaConnection = new Connection(RPC_ENDPOINT, {
@@ -56,8 +63,10 @@ const solanaConnection = new Connection(RPC_ENDPOINT, {
 export interface MinimalTokenAccountData {
   mint: PublicKey;
   address: PublicKey;
+  amount: number;
   poolKeys?: LiquidityPoolKeys;
   market?: MinimalMarketLayoutV3;
+  purchasePrice?: number;
 }
 
 const existingLiquidityPools: Set<string> = new Set<string>();
@@ -123,10 +132,12 @@ async function init(): Promise<void> {
     existingTokenAccounts.set(ta.accountInfo.mint.toString(), <MinimalTokenAccountData>{
       mint: ta.accountInfo.mint,
       address: ta.pubkey,
+      amount: ta.accountInfo.amount.toNumber(),
+      purchasePrice: undefined, // It would be too costly to use API just for real-time prices
     });
   }
 
-  const tokenAccount = tokenAccounts.find((acc) => acc.accountInfo.mint.toString() === quoteToken.mint.toString())!;
+  const tokenAccount = tokenAccounts.find((acc) => acc.accountInfo.mint.toString() === quoteToken.mint.toString());
 
   if (!tokenAccount) {
     throw new Error(`No ${quoteToken.symbol} token account found in wallet: ${wallet.publicKey}`);
@@ -135,7 +146,11 @@ async function init(): Promise<void> {
   quoteTokenAssociatedAddress = tokenAccount.pubkey;
 }
 
-function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
+async function getTokenAccountAndPrice(
+  mint: PublicKey,
+  accountData: MinimalMarketLayoutV3,
+): Promise<MinimalTokenAccountData> {
+  const purchasePrice = await fetchCoinPrice(mint.toString(), MORALIS_API_KEY);
   const ata = getAssociatedTokenAddressSync(mint, wallet.publicKey);
   const tokenAccount = <MinimalTokenAccountData>{
     address: ata,
@@ -145,8 +160,8 @@ function saveTokenAccount(mint: PublicKey, accountData: MinimalMarketLayoutV3) {
       asks: accountData.asks,
       eventQueue: accountData.eventQueue,
     },
+    purchasePrice,
   };
-  existingTokenAccounts.set(mint.toString(), tokenAccount);
   return tokenAccount;
 }
 
@@ -229,7 +244,8 @@ export async function processOpenBookMarket(updatedAccountInfo: KeyedAccountInfo
       return;
     }
 
-    saveTokenAccount(accountData.baseMint, accountData);
+    const tokenAccount = await getTokenAccountAndPrice(accountData.baseMint, accountData);
+    existingTokenAccounts.set(tokenAccount.mint.toString(), tokenAccount);
   } catch (e) {
     logger.debug(e);
     logger.error({ mint: accountData?.baseMint }, `Failed to process market`);
@@ -243,7 +259,8 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
     if (!tokenAccount) {
       // it's possible that we didn't have time to fetch open book data
       const market = await getMinimalMarketV3(solanaConnection, accountData.marketId, COMMITMENT_LEVEL);
-      tokenAccount = saveTokenAccount(accountData.baseMint, market);
+      // In method getTokenAccountAndPrice, we fetch the price of the token as well
+      tokenAccount = await getTokenAccountAndPrice(accountData.baseMint, market);
     }
 
     tokenAccount.poolKeys = createPoolKeys(accountId, accountData, tokenAccount.market!);
