@@ -14,7 +14,6 @@ import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { MinimalMarketLayoutV3 } from '../market';
 import BN from 'bn.js';
 import Moralis from 'moralis';
-import { MORALIS_API_KEY } from '../constants';
 
 export type TokenAccountWithAmountAndPrice = TokenAccount & { amount: BN; price: number | undefined };
 
@@ -79,7 +78,7 @@ export async function getTokenAccounts(
   const accounts: TokenAccountWithAmountAndPrice[] = [];
   for (const { pubkey, account } of tokenResp.value) {
     const accountInfo = SPL_ACCOUNT_LAYOUT.decode(account.data);
-    const coinPrice = await fetchCoinPrice(accountInfo.mint.toBase58(), MORALIS_API_KEY);
+    const coinPrice = await fetchCoinPrice(accountInfo.mint.toBase58());
     accounts.push({
       pubkey,
       programId: account.owner,
@@ -93,10 +92,8 @@ export async function getTokenAccounts(
   return accounts;
 }
 
-export async function fetchCoinPrice(mintAddress: string, apiKey: string): Promise<number | undefined> {
+export async function fetchCoinPrice(mintAddress: string): Promise<number | undefined> {
   try {
-    console.log('Fetching real-time coin price:', mintAddress, apiKey);
-    await Moralis.start({ apiKey });
     const response = await Moralis.SolApi.token.getTokenPrice({
       network: 'mainnet',
       address: mintAddress,
@@ -107,11 +104,11 @@ export async function fetchCoinPrice(mintAddress: string, apiKey: string): Promi
       // If the price is 0, we either way can't calculate the gain, so we return undefined.
       // Moralis docs: Currently, this API only support at most 4 decimal places results on usdPrice output field.
       // This implies that the smallest unit return will be 0.0001. Any token price below $0.0001 on Raydium will be rounded down and presented at 0.
-      console.log(`Price of coin ${mintAddress} is 0, returning undefined`);
       return undefined;
     }
     return price;
   } catch (e) {
-    console.error('Fetching real-time coin price:', e);
+    // This happen often times due to Moralis 'bad request' error.
+    return undefined;
   }
 }

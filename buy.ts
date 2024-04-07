@@ -56,6 +56,7 @@ import {
   SELL_AFTER_GAIN_PERCENTAGE,
 } from './constants';
 import BN from 'bn.js';
+import Moralis from 'moralis';
 
 const solanaConnection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
@@ -83,6 +84,7 @@ let quoteMaxPoolSizeAmount: TokenAmount;
 let processingToken: Boolean = false;
 
 async function init(): Promise<void> {
+  await Moralis.start({ apiKey: MORALIS_API_KEY });
   logger.level = LOG_LEVEL;
 
   // get wallet
@@ -151,7 +153,7 @@ async function getTokenAccountAndPrice(
   mint: PublicKey,
   accountData: MinimalMarketLayoutV3,
 ): Promise<MinimalTokenAccountData> {
-  const purchasePrice = await fetchCoinPrice(mint.toString(), MORALIS_API_KEY);
+  const purchasePrice = await fetchCoinPrice(mint.toString());
   const ata = getAssociatedTokenAddressSync(mint, wallet.publicKey);
   const tokenAccount = <MinimalTokenAccountData>{
     address: ata,
@@ -505,12 +507,16 @@ const runListener = async () => {
         return;
       }
       const tokenAccount = existingTokenAccounts.get(accountData.mint.toString());
-      if (!tokenAccount || !tokenAccount.purchasePrice) {
+      if (!tokenAccount) {
+        logger.warn(`Token account not found for mint ${accountData.mint.toString()}`);
+        return;
+      }
+      if (!tokenAccount.purchasePrice) {
         // logger.warn({ mint:
         logger.warn(`Trying to sell token ${accountData.mint.toString()} but no purchase price found`);
         return;
       }
-      const currentPrice = await fetchCoinPrice(tokenAccount.mint.toString(), MORALIS_API_KEY);
+      const currentPrice = await fetchCoinPrice(tokenAccount.mint.toString());
       if (!currentPrice) {
         logger.warn(
           `Failed to fetch current price for token ${accountData.mint.toString()}, or the price of token is 0.`,
@@ -520,7 +526,23 @@ const runListener = async () => {
 
       const profit_percentage = (currentPrice - tokenAccount.purchasePrice) / tokenAccount.purchasePrice;
 
-      if (profit_percentage > SELL_AFTER_GAIN_PERCENTAGE) {
+      if (profit_percentage < 0) {
+        logger.info(
+          {
+            mint: accountData.mint,
+            profit_percentage: profit_percentage,
+          },
+          `Loss of ${profit_percentage}%, not selling token at price of ${currentPrice}...`,
+        );
+      } else if (0 <= profit_percentage && profit_percentage < SELL_AFTER_GAIN_PERCENTAGE) {
+        logger.info(
+          {
+            mint: accountData.mint,
+            profit_percentage: profit_percentage,
+          },
+          `Profit of ${profit_percentage}%, not selling token at price of ${currentPrice}...`,
+        );
+      } else {
         logger.info(
           {
             mint: accountData.mint,
