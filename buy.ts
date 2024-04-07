@@ -521,6 +521,13 @@ const runListener = async () => {
       const profit_percentage = (currentPrice - tokenAccount.purchasePrice) / tokenAccount.purchasePrice;
 
       if (profit_percentage > SELL_AFTER_GAIN_PERCENTAGE) {
+        logger.info(
+          {
+            mint: accountData.mint,
+            profit_percentage: profit_percentage,
+          },
+          `Reached the profit percentage of ${SELL_AFTER_GAIN_PERCENTAGE}%, selling token at price of ${currentPrice}...`,
+        );
         sell(accountData.mint, accountData.amount, tokenAccount);
       }
     },
