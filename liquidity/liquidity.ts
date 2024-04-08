@@ -13,12 +13,21 @@ import {
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { MinimalMarketLayoutV3 } from '../market';
 import BN from 'bn.js';
-import Moralis from 'moralis';
+import { logger } from '../utils';
+import { QUOTE_MINT } from '../constants';
+import { DexScreenerListedTokensApi } from './liquidity-types';
 
 export type TokenAccountWithAmountAndPrice = TokenAccount & { amount: BN; price: number | undefined };
 
+const SOLANA_TOKEN_ADDRESS = 'So11111111111111111111111111111111111111112';
+
 export const RAYDIUM_LIQUIDITY_PROGRAM_ID_V4 = MAINNET_PROGRAM_ID.AmmV4;
 export const OPENBOOK_PROGRAM_ID = MAINNET_PROGRAM_ID.OPENBOOK_MARKET;
+
+const QUOTE_MINT_TO_DEXSCREENER_SYMBOL: { [key: string]: string } = {
+  WSOL: 'SOL',
+  USDC: 'USDC',
+};
 
 export const MINIMAL_MARKET_STATE_LAYOUT_V3 = struct([publicKey('eventQueue'), publicKey('bids'), publicKey('asks')]);
 
@@ -93,22 +102,54 @@ export async function getTokenAccounts(
 }
 
 export async function fetchCoinPrice(mintAddress: string): Promise<number | undefined> {
+  // https://docs.dexscreener.com/api/reference#get-one-or-multiple-pairs-by-token-address
   try {
-    const response = await Moralis.SolApi.token.getTokenPrice({
-      network: 'mainnet',
-      address: mintAddress,
-    });
-    const price = response.raw.usdPrice;
-    if (price === 0) {
-      // This is because method fetchCoinPrice is used for auto sell strategy after we reach some % of gain.
-      // If the price is 0, we either way can't calculate the gain, so we return undefined.
-      // Moralis docs: Currently, this API only support at most 4 decimal places results on usdPrice output field.
-      // This implies that the smallest unit return will be 0.0001. Any token price below $0.0001 on Raydium will be rounded down and presented at 0.
+    const url = `https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`;
+
+    const response = await fetch(url);
+    const ApiReturnObject: DexScreenerListedTokensApi = await response.json();
+
+    if (ApiReturnObject.pairs === null || ApiReturnObject.pairs.length === 0) {
+      logger.warn({ mintAddress }, 'No trade pairs found for mint address.');
       return undefined;
     }
+
+    if (mintAddress === SOLANA_TOKEN_ADDRESS) {
+      switch (QUOTE_MINT) {
+        case 'USDC':
+          return parseFloat(ApiReturnObject.pairs[0].priceUsd);
+        case 'WSOL':
+          // SOL denominated in SOL is 1
+          return 1;
+        default:
+          logger.warn({ mintAddress }, 'Environment variable is not set to USDC or WSOL. Returning undefined.');
+          return undefined;
+      }
+    }
+
+    const dexScreenerSymbol = QUOTE_MINT_TO_DEXSCREENER_SYMBOL[QUOTE_MINT];
+
+    const pair = ApiReturnObject.pairs.find((pair) => pair.quoteToken.symbol === dexScreenerSymbol);
+    if (!pair) {
+      logger.warn(
+        { mintAddress, quoteMint: QUOTE_MINT, dexScreenerSymbol },
+        'No trade pair found for mint address and quote mint.',
+      );
+      return undefined;
+    }
+    let price: number;
+    if (QUOTE_MINT === 'USDC') {
+      price = parseFloat(pair.priceUsd);
+    } else if (QUOTE_MINT === 'WSOL') {
+      price = parseFloat(pair.priceNative);
+    } else {
+      logger.warn({ mintAddress }, 'Environment variable is not set to USDC or WSOL. Returning undefined.');
+      return undefined;
+    }
+    logger.info({ mintAddress, price }, 'Fetched coin price.');
     return price;
   } catch (e) {
-    // This happen often times due to Moralis 'bad request' error.
+    logger.warn({ mintAddress, error: e }, 'Failed to fetch coin price. Returning undefined.');
     return undefined;
   }
 }
