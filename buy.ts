@@ -53,6 +53,9 @@ import {
   MAX_POOL_SIZE,
   ONE_TOKEN_AT_A_TIME,
   SELL_AFTER_GAIN_PERCENTAGE,
+  AUTO_SELL,
+  SELL_AFTER_GAIN,
+  AUTO_SELL_DELAY,
 } from './constants';
 import BN from 'bn.js';
 
@@ -124,6 +127,12 @@ async function init(): Promise<void> {
   );
   logger.info(`One token at a time: ${ONE_TOKEN_AT_A_TIME}`);
   logger.info(`Buy amount: ${quoteAmount.toFixed()} ${quoteToken.symbol}`);
+
+  logger.info(`Auto sell: ${AUTO_SELL}`);
+  logger.info(`Sell delay: ${AUTO_SELL_DELAY === 0 ? 'false' : AUTO_SELL_DELAY}`);
+
+  logger.info(`Sell after gain: ${SELL_AFTER_GAIN}`);
+  logger.info(`Sell after gain percentage: ${SELL_AFTER_GAIN_PERCENTAGE * 100}%`);
 
   // check existing wallet for associated token account of quote mint
   const tokenAccounts = await getTokenAccounts(solanaConnection, wallet.publicKey, COMMITMENT_LEVEL);
@@ -330,11 +339,6 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
           amount: new BN(amount),
           purchasePrice: price,
         });
-
-        const tokensWhereWeFoundThePrice = Array.from(existingTokenAccounts.values()).filter(
-          (token) => token.purchasePrice && token.market,
-        );
-        console.log('TEMPORARY LOGS: Tokens where we found the price:', tokensWhereWeFoundThePrice);
       } else {
         logger.warn({ baseMint }, `Failed to fetch price for token while buying it.`);
       }
@@ -352,6 +356,10 @@ async function buy(accountId: PublicKey, accountData: LiquidityStateV4): Promise
 async function sell(mint: PublicKey, amount: BigNumberish, tokenAccount: MinimalTokenAccountData): Promise<void> {
   let sold = false;
   let retries = 0;
+
+  if (AUTO_SELL_DELAY > 0) {
+    await new Promise((resolve) => setTimeout(resolve, AUTO_SELL_DELAY));
+  }
 
   do {
     try {
@@ -486,99 +494,140 @@ const runListener = async () => {
     ],
   );
 
-  const walletSubscriptionId = solanaConnection.onProgramAccountChange(
-    TOKEN_PROGRAM_ID,
-    async (updatedAccountInfo) => {
-      const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo!.data);
+  let sellAfterGainSubscription = null;
+  if (SELL_AFTER_GAIN) {
+    sellAfterGainSubscription = solanaConnection.onProgramAccountChange(
+      TOKEN_PROGRAM_ID,
+      async (updatedAccountInfo) => {
+        const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo!.data);
 
-      logger.info('Checking if we should sell token...');
-      if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
-        // We don't want to sell the quote token (WSOL or USDC)
-        return;
-      }
-      const tokenAccount = existingTokenAccounts.get(accountData.mint.toString());
-      // First, we want to check if we have detected the token before
-      if (!tokenAccount) {
-        logger.warn(`Token account not found for mint ${accountData.mint.toString()}`);
-        return;
-      }
+        logger.info('Checking if we should sell token...');
+        if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
+          // We don't want to sell the quote token (WSOL or USDC)
+          return;
+        }
+        const tokenAccount = existingTokenAccounts.get(accountData.mint.toString());
+        // First, we want to check if we have detected the token before
+        if (!tokenAccount) {
+          logger.warn(`Token account not found for mint ${accountData.mint.toString()}`);
+          return;
+        }
 
-      // Then we want to check if we have pool keys for the token
-      if (!tokenAccount.poolKeys) {
-        logger.warn({ mint: tokenAccount.mint }, 'No pool keys found');
-        return;
-      }
+        // Then we want to check if we have pool keys for the token
+        if (!tokenAccount.poolKeys) {
+          logger.warn({ mint: tokenAccount.mint }, 'No pool keys found');
+          return;
+        }
 
-      // Then we want to check if we have registered a purchase price
-      // We bought, but didn't register the price in case of API not being available
-      if (!tokenAccount.purchasePrice) {
-        logger.info(`Trying to sell token ${accountData.mint.toString()} but no purchase price found`);
-        return;
-      }
+        // Then we want to check if we have registered a purchase price
+        // We bought, but didn't register the price in case of API not being available
+        if (!tokenAccount.purchasePrice) {
+          logger.info(`Trying to sell token ${accountData.mint.toString()} but no purchase price found`);
+          return;
+        }
 
-      // Then we want to check if we have a balance of the token
-      if (Number(accountData.amount) === 0) {
-        logger.info(
-          {
-            mint: tokenAccount.mint,
-          },
-          `Empty balance, can't sell`,
-        );
-        return;
-      }
+        // Then we want to check if we have a balance of the token
+        if (Number(accountData.amount) === 0) {
+          logger.info(
+            {
+              mint: tokenAccount.mint,
+            },
+            `Empty balance, can't sell`,
+          );
+          return;
+        }
 
-      // Lastly, we want to check the current price.
-      // It's important that we check the price last, Since calling the API is expensive in terms of time and API rate limits.
-      const currentPrice = await fetchCoinPrice(tokenAccount.mint.toString());
-      if (!currentPrice) {
-        logger.warn(
-          `Failed to fetch current price for token ${accountData.mint.toString()}, or the price of token is 0.`,
-        );
-        return;
-      }
+        // Lastly, we want to check the current price.
+        // It's important that we check the price last, Since calling the API is expensive in terms of time and API rate limits.
+        const currentPrice = await fetchCoinPrice(tokenAccount.mint.toString());
+        if (!currentPrice) {
+          logger.warn(
+            `Failed to fetch current price for token ${accountData.mint.toString()}, or the price of token is 0.`,
+          );
+          return;
+        }
 
-      const profitShare = (currentPrice - tokenAccount.purchasePrice) / tokenAccount.purchasePrice;
-      const profitPercentage = profitShare * 100;
+        const profitShare = (currentPrice - tokenAccount.purchasePrice) / tokenAccount.purchasePrice;
+        const profitPercentage = profitShare * 100;
 
-      if (profitShare < SELL_AFTER_GAIN_PERCENTAGE) {
-        logger.info(
-          {
-            mint: accountData.mint,
-            profitPercentage,
-          },
-          `Profit of ${profitPercentage}%, not selling token at price of ${currentPrice}...`,
-        );
-        return;
-      } else {
-        logger.info(
-          {
-            mint: accountData.mint,
-            profit_percentage: profitPercentage,
-            soldAt: currentPrice,
-          },
-          `Reached the profit percentage of ${profitPercentage}% (surpassing the ${SELL_AFTER_GAIN_PERCENTAGE * 100}%), selling the token.`,
-        );
-        sell(accountData.mint, accountData.amount, tokenAccount);
-        return;
-      }
-    },
-    COMMITMENT_LEVEL,
-    [
-      {
-        dataSize: 165,
+        if (profitShare < SELL_AFTER_GAIN_PERCENTAGE) {
+          logger.info(
+            {
+              mint: accountData.mint,
+              profitPercentage,
+            },
+            `Profit of ${profitPercentage}%, not selling token at price of ${currentPrice}...`,
+          );
+          return;
+        } else {
+          logger.info(
+            {
+              mint: accountData.mint,
+              profit_percentage: profitPercentage,
+              soldAt: currentPrice,
+            },
+            `Reached the profit percentage of ${profitPercentage}% (surpassing the ${SELL_AFTER_GAIN_PERCENTAGE * 100}%), selling the token.`,
+          );
+          sell(accountData.mint, accountData.amount, tokenAccount);
+          return;
+        }
       },
-      {
-        memcmp: {
-          offset: 32,
-          bytes: wallet.publicKey.toBase58(),
+      COMMITMENT_LEVEL,
+      [
+        {
+          dataSize: 165,
         },
+        {
+          memcmp: {
+            offset: 32,
+            bytes: wallet.publicKey.toBase58(),
+          },
+        },
+      ],
+    );
+    logger.info(
+      `Listening for wallet changes and implementing sell after gain percentage strategy: ${sellAfterGainSubscription}`,
+    );
+  }
+
+  let autoSellSubscription = null;
+  if (AUTO_SELL) {
+    autoSellSubscription = solanaConnection.onProgramAccountChange(
+      TOKEN_PROGRAM_ID,
+      async (updatedAccountInfo) => {
+        const accountData = AccountLayout.decode(updatedAccountInfo.accountInfo!.data);
+
+        if (updatedAccountInfo.accountId.equals(quoteTokenAssociatedAddress)) {
+          return;
+        }
+
+        const tokenAccount = existingTokenAccounts.get(accountData.mint.toString());
+        // First, we want to check if we have detected the token before
+        if (!tokenAccount) {
+          logger.warn(`Token account not found for mint ${accountData.mint.toString()}`);
+          return;
+        }
+
+        const _ = sell(accountData.mint, accountData.amount, tokenAccount);
       },
-    ],
-  );
+      COMMITMENT_LEVEL,
+      [
+        {
+          dataSize: 165,
+        },
+        {
+          memcmp: {
+            offset: 32,
+            bytes: wallet.publicKey.toBase58(),
+          },
+        },
+      ],
+    );
 
-  logger.info(`Listening for wallet changes: ${walletSubscriptionId}`);
+    logger.info(`Listening for wallet changes and implementing after sell subscription: ${autoSellSubscription}`);
+  }
 
-  logger.info(`Listening for raydium changes: ${raydiumSubscriptionId}`);
+  logger.info(`Listening for Raydium changes: ${raydiumSubscriptionId}`);
   logger.info(`Listening for open book changes: ${openBookSubscriptionId}`);
 
   logger.info('------------------- 🚀 ---------------------');
