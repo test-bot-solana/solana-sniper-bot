@@ -56,8 +56,10 @@ import {
   AUTO_SELL,
   SELL_AFTER_GAIN,
   AUTO_SELL_DELAY,
+  RUGPULL_CHECK,
 } from './constants';
 import BN from 'bn.js';
+import { getTokenMetadata } from './check-rugpulls';
 
 const solanaConnection = new Connection(RPC_ENDPOINT, {
   wsEndpoint: RPC_WEBSOCKET_ENDPOINT,
@@ -133,6 +135,8 @@ async function init(): Promise<void> {
 
   logger.info(`Sell after gain: ${SELL_AFTER_GAIN}`);
   logger.info(`Sell after gain percentage: ${SELL_AFTER_GAIN_PERCENTAGE * 100}%`);
+
+  logger.info(`Rugpull check: ${RUGPULL_CHECK}`);
 
   // check existing wallet for associated token account of quote mint
   const tokenAccounts = await getTokenAccounts(solanaConnection, wallet.publicKey, COMMITMENT_LEVEL);
@@ -222,6 +226,13 @@ export async function processRaydiumPool(id: PublicKey, poolState: LiquidityStat
     }
   }
 
+  if (RUGPULL_CHECK) {
+    const isSafeToBuy = getTokenMetadata(poolState.baseMint);
+    if (!isSafeToBuy) {
+      logger.warn({ mint: poolState.baseMint }, 'Skipping, token is not safe to buy. It might be a rugpull.');
+      return;
+    }
+  }
   await buy(id, poolState);
 }
 

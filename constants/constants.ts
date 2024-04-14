@@ -24,6 +24,7 @@ export const SELL_AFTER_GAIN_PERCENTAGE = parseFloat(retrieveEnvVariable('SELL_A
 export const SELL_AFTER_GAIN = retrieveEnvVariable('SELL_AFTER_GAIN', logger) === 'true';
 export const AUTO_SELL = retrieveEnvVariable('AUTO_SELL', logger) === 'true';
 export const AUTO_SELL_DELAY = parseFloat(retrieveEnvVariable('AUTO_SELL_DELAY', logger));
+export const RUGPULL_CHECK = retrieveEnvVariable('RUGPULL_CHECK', logger) === 'true';
 
 if (AUTO_SELL && SELL_AFTER_GAIN) {
   logger.error('AUTO_SELL and SELL_AFTER_GAIN strategies cannot be used together. You get to choose one at most.');
